@@ -7,22 +7,39 @@ const { CloudFrontClient, CreateInvalidationCommand, GetInvalidationCommand } = 
 const { fromIni } = require('@aws-sdk/credential-provider-ini'); 
 const { exit } = require('process');
 
+const consoleGreen = '\x1b[32m%s\x1b[0m';
+const consoleRed = '\x1b[31m%s\x1b[0m';
+const consoleYellow = '\x1b[33m%s\x1b[0m';
+const consoleBlue = '\x1b[34m%s\x1b[0m';
+
 const argv = yargs.options('config', {
   alias: 'c',
   describe: 'Path to the configuration file.',
 }).argv;
 
 // Configuration loading
+if (process.env.AWS_DEPLOY_CONFIG_FILE == "" || argv.config == "") {
+  console.error(consoleRed, 'Configuration is missing! Please set AWS_DEPLOY_CONFIG_FILE or use --config option.');
+  exit(1);
+}
 const configPath = process.env.AWS_DEPLOY_CONFIG_FILE || argv.config;
 const configData = fs.readFileSync(path.resolve(configPath), 'utf-8');
 const config = JSON.parse(configData);
 
-const bucketName = config.bucketName || process.env.AWS_DEPLOY_BUCKET_NAME;
-const s3Region = config.bucketRegion || process.env.AWS_DEPLOY_BUCKET_REGION;
-const cloudFrontDistributionId = config.cloudFrontID || process.env.AWS_DEPLOY_CLOUDFRONT_ID;
+const configInt = {
+  awsProfile: config.awsProfile || process.env.AWS_PROFILE,
+  bucketName: process.env.AWS_DEPLOY_BUCKET_NAME || config.bucketName,
+  s3Region: process.env.AWS_DEPLOY_BUCKET_REGION || config.bucketRegion,
+  webFolder: process.env.AWS_DEPLOY_WEB_FOLDER ||  config.buildFolder,
+  cloudFrontDistributionId: process.env.AWS_DEPLOY_CLOUDFRONT_ID || config.cloudFrontID,
+  cloudFrontDefaultCacheControl: process.env.AWS_DEPLOY_DEFAULT_CACHE_CONTROL || config.cloudFrontDefaultCacheControl,
+  emptyBucket: process.env.AWS_DEPLOY_EMPTY_BUCKET || config.emptyBucket,
+}
 
-if (!cloudFrontDistributionId) {
-  console.error('\x1b[31m%s\x1b[0m',  'CloudFront distribution ID not found in config or environment variable (cloudFrontID)');
+console.log(configInt.cloudFrontDefaultCacheControl)
+
+if (!configInt.cloudFrontDistributionId) {
+  console.error(consoleRed,  'CloudFront distribution ID not found in config or environment variable (cloudFrontID)');
   process.exit(1); 
 }
 
@@ -32,12 +49,12 @@ const credentials = process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCE
         accessKeyId: process.env.AWS_ACCESS_KEY_ID,
         secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
      }
-    : fromIni({ profile: config.awsProfile || process.env.AWS_PROFILE }) || null;
+    : fromIni({ profile: configInt.awsProfile }) || null;
 
-const s3Client = new S3Client({ credentials, region: s3Region });
-const cfClient = new CloudFrontClient({ region: s3Region }); 
+const s3Client = new S3Client({ credentials, region: configInt.s3Region });
+const cfClient = new CloudFrontClient({ region: configInt.s3Region }); 
 
-// Helper function for recursive upload
+// Function for recursive upload
 async function uploadDirectory(directoryPath, s3PathPrefix = '') {
   const files = fs.readdirSync(directoryPath);
 
@@ -51,24 +68,21 @@ async function uploadDirectory(directoryPath, s3PathPrefix = '') {
       const key = s3PathPrefix + file;
       const contentType = mime.lookup(filePath) || 'application/octet-stream'; 
 
-      let cacheControl = config.cloudFrontDefaultCacheControl || process.env.AWS_DEPLOY_DEFAULT_CACHE_CONTROL; // Default cache control
-      // console.log(`Checking cache rules for ${key}`);
-
       for (const cacheRule of config.cloudFrontCaches) {
         let escapedPath = cacheRule.path.replace(/\./g, '\\.').replace(/\*/g, '.*'); 
         let pattern = escapedPath;
         if (escapedPath.startsWith('/')) {
-          pattern = '^' + escapedPath.substring(1); // Anchor to the start if leading '/'
+          pattern = '^' + escapedPath.substring(1);
       }
       if (key.match(new RegExp(pattern))) { 
           cacheControl = cacheRule.cacheControl;
           console.log('\x1b[36m%s\x1b[0m', `Cache rule for ${key}: ${cacheControl}`);
-          break; // Match found, stop searching
+          break;
         }
       }
 
       const uploadParams = {
-        Bucket: bucketName,
+        Bucket: configInt.bucketName,
         Key: key,
         Body: fs.createReadStream(filePath),
         ContentType: contentType,
@@ -80,7 +94,7 @@ async function uploadDirectory(directoryPath, s3PathPrefix = '') {
         await s3Client.send(new PutObjectCommand(uploadParams)); 
         console.log(`Uploaded: ${key}`);
       } catch (error) {
-        console.error('\x1b[31m%s\x1b[0m', `Error uploading ${key}:`, error);
+        console.error(consoleRed, `Error uploading ${key}:`, error);
       }
     }
   }
@@ -88,18 +102,17 @@ async function uploadDirectory(directoryPath, s3PathPrefix = '') {
 
 async function emptyBucket() {
   const listParams = {
-    Bucket: bucketName
+    Bucket: configInt.bucketName
   };
 
   try {
     const data = await s3Client.send(new ListObjectsCommand(listParams));
-    // console.log(data);
-    console.log('\x1b[33m%s\x1b[0m', 'Emptying bucket...'); // Yellow color
+    console.log(consoleYellow, 'Emptying bucket...');
     
     if (data.Contents && data.Contents.length > 0) {
-      console.log('\x1b[34m%s\x1b[0m', data.Contents.length + ' items found in bucket ' + bucketName)
+      console.log(consoleBlue, data.Contents.length + ' items found in bucket ' + configInt.bucketName)
       const deleteParams = {
-        Bucket: bucketName,
+        Bucket: configInt.bucketName,
         Delete: { Objects: [] }
       };
 
@@ -110,10 +123,11 @@ async function emptyBucket() {
       await s3Client.send(new DeleteObjectsCommand(deleteParams));  
     } 
   } catch (error) {
-    console.error('\x1b[31m%s\x1b[0m', 'Error emptying bucket: ', error);
+    console.error(consoleRed, 'Error emptying bucket: ', error);
     exit(1);
   }
-  console.log('\x1b[32m%s\x1b[0m', 'Bucket emptied successfully!')
+  
+  console.log(consoleGreen, 'Bucket emptied successfully!')
 }
 
 async function waitForCloudFrontInvalidation(cfClient, distributionId, invalidationId) {
@@ -124,7 +138,7 @@ async function waitForCloudFrontInvalidation(cfClient, distributionId, invalidat
 
   let invalidationStatus;
   do {
-    await delay(5000); // 5-second delay between checks
+    await delay(5000);
 
     const { Invalidation } = await cfClient.send(new GetInvalidationCommand(getInvalidationParams));
     invalidationStatus = Invalidation.Status;
@@ -140,33 +154,33 @@ function delay(ms) {
 async function main() {
   const directoryToUpload = config.buildFolder || process.env.AWS_DEPLOY_WEB_FOLDER;
 
-  if (config.emptyBucket || process.env.AWS_DEPLOY_EMPTY_BUCKET) {
+  if (configInt.emptyBucket) {
     await emptyBucket();
     await delay(2000);
   }
 
-  await uploadDirectory(directoryToUpload);
+  await uploadDirectory(configInt.webFolder);
 
   // Create CloudFront Invalidation
   const invalidationParams = {
-    DistributionId: cloudFrontDistributionId, 
+    DistributionId: configInt.cloudFrontDistributionId, 
     InvalidationBatch: {
       Paths: {
         Quantity: 1, 
-        Items: config.cloudFrontInvalidationPaths // Invalidate all paths
+        Items: config.cloudFrontInvalidationPaths
       },
-      CallerReference: Date.now().toString() // Unique reference
+      CallerReference: Date.now().toString()
     }
   };
 
   try {
     const createResult = await cfClient.send(new CreateInvalidationCommand(invalidationParams));
-    console.log('\x1b[33m%s\x1b[0m', `CloudFront invalidation created:`, createResult.Invalidation.Id); // Yellow color
+    console.log(consoleYellow, `CloudFront invalidation created:`, createResult.Invalidation.Id); // Yellow color
 
-    await waitForCloudFrontInvalidation(cfClient, cloudFrontDistributionId, createResult.Invalidation.Id); 
-    console.log('\x1b[32m%s\x1b[0m', 'CloudFront invalidation completed successfully!'); // Green color
+    await waitForCloudFrontInvalidation(cfClient, configInt.cloudFrontDistributionId, createResult.Invalidation.Id); 
+    console.log(consoleGreen, 'CloudFront invalidation completed successfully!'); // Green color
   } catch (error) {
-    console.error('\x1b[31m%s\x1b[0m', 'CloudFront invalidation error:', error);
+    console.error(consoleRed, 'CloudFront invalidation error:', error);
   }
 }
 
