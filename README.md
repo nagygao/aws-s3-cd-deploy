@@ -2,9 +2,6 @@
 
 Deploy static websites to S3, set caching rules and invalidate CloudFront Distribution.
 
-[!NOTE]
-Empty bucket feature is not implemented yet.
-
 Create a config JSON file for configuration
 
 ```json
