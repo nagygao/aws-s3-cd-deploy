@@ -1,13 +1,22 @@
 const fs = require('fs');
 const path = require('path');
-const mime = require('mime-types'); 
-const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
+const mime = require('mime-types');
+const yargs = require('yargs');
+const { S3Client, PutObjectCommand, ListObjectsCommand, DeleteObjectsCommand } = require('@aws-sdk/client-s3');
 const { CloudFrontClient, CreateInvalidationCommand, GetInvalidationCommand } = require('@aws-sdk/client-cloudfront');
 const { fromIni } = require('@aws-sdk/credential-provider-ini'); 
 const { exit } = require('process');
 
+const argv = yargs.options('config', {
+  alias: 'c',
+  describe: 'Path to the configuration file.',
+}).argv;
+
 // Configuration loading
-const config = JSON.parse(fs.readFileSync('./config.json'));
+const configPath = process.env.AWS_DEPLOY_CONFIG_FILE || argv.config;
+const configData = fs.readFileSync(path.resolve(configPath), 'utf-8');
+const config = JSON.parse(configData);
+
 const bucketName = config.bucketName || process.env.AWS_DEPLOY_BUCKET_NAME;
 const s3Region = config.bucketRegion || process.env.AWS_DEPLOY_BUCKET_REGION;
 const cloudFrontDistributionId = config.cloudFrontID || process.env.AWS_DEPLOY_CLOUDFRONT_ID;
@@ -77,6 +86,36 @@ async function uploadDirectory(directoryPath, s3PathPrefix = '') {
   }
 }
 
+async function emptyBucket() {
+  const listParams = {
+    Bucket: bucketName
+  };
+
+  try {
+    const data = await s3Client.send(new ListObjectsCommand(listParams));
+    // console.log(data);
+    console.log('\x1b[33m%s\x1b[0m', 'Emptying bucket...'); // Yellow color
+    
+    if (data.Contents && data.Contents.length > 0) {
+      console.log('\x1b[34m%s\x1b[0m', data.Contents.length + ' items found in bucket ' + bucketName)
+      const deleteParams = {
+        Bucket: bucketName,
+        Delete: { Objects: [] }
+      };
+
+      data.Contents.forEach(({ Key }) => {
+        deleteParams.Delete.Objects.push({ Key });
+      });
+
+      await s3Client.send(new DeleteObjectsCommand(deleteParams));  
+    } 
+  } catch (error) {
+    console.error('\x1b[31m%s\x1b[0m', 'Error emptying bucket: ', error);
+    exit(1);
+  }
+  console.log('\x1b[32m%s\x1b[0m', 'Bucket emptied successfully!')
+}
+
 async function waitForCloudFrontInvalidation(cfClient, distributionId, invalidationId) {
   const getInvalidationParams = {
     DistributionId: distributionId,
@@ -100,6 +139,11 @@ function delay(ms) {
 
 async function main() {
   const directoryToUpload = config.buildFolder || process.env.AWS_DEPLOY_WEB_FOLDER;
+
+  if (config.emptyBucket || process.env.AWS_DEPLOY_EMPTY_BUCKET) {
+    await emptyBucket();
+    await delay(2000);
+  }
 
   await uploadDirectory(directoryToUpload);
 

@@ -44,6 +44,7 @@ Also you can use the following env variables
 AWS_ACCESS_KEY_ID - Your AWS access key ID.
 AWS_SECRET_ACCESS_KEY - Your AWS access key secret.
 AWS_PROFILE - Your AWS profile.
+AWS_DEPLOY_CONFIG_FILE_ - String: Path to the configuration file.
 AWS_DEPLOY_BUCKET_NAME - String: The name of the bucket where you want to upload the static site files.
 AWS_DEPLOY_BUCKET_REGION - String: The AWS region of the S3 bucket. (e.g.: us-east-1)
 AWS_DEPLOY_EMPTY_BUCKET - Bool: Empty the S3 bucket before upload.
