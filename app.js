@@ -99,7 +99,7 @@ function delay(ms) {
 }
 
 async function main() {
-  const directoryToUpload = config.buildFolder || process.env.AWS_DEPLOY_WEB_FOLDER; // Replace with the correct path
+  const directoryToUpload = config.buildFolder || process.env.AWS_DEPLOY_WEB_FOLDER;
 
   await uploadDirectory(directoryToUpload);
 
