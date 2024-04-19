@@ -7,39 +7,75 @@ const { CloudFrontClient, CreateInvalidationCommand, GetInvalidationCommand } = 
 const { fromIni } = require('@aws-sdk/credential-provider-ini'); 
 const { exit } = require('process');
 
+// Set console colors
 const consoleGreen = '\x1b[32m%s\x1b[0m';
 const consoleRed = '\x1b[31m%s\x1b[0m';
 const consoleYellow = '\x1b[33m%s\x1b[0m';
 const consoleBlue = '\x1b[34m%s\x1b[0m';
 
+// Get config file from argument
 const argv = yargs.options('config', {
   alias: 'c',
   describe: 'Path to the configuration file.',
 }).argv;
 
-// Configuration loading
+// Handling missing config file location
 if (process.env.AWS_DEPLOY_CONFIG_FILE == "" || argv.config == "") {
   console.error(consoleRed, 'Configuration is missing! Please set AWS_DEPLOY_CONFIG_FILE or use --config option.');
   exit(1);
 }
+
+// Configuration loading
 const configPath = process.env.AWS_DEPLOY_CONFIG_FILE || argv.config;
 const configData = fs.readFileSync(path.resolve(configPath), 'utf-8');
 const config = JSON.parse(configData);
 
+// Set variables from config or environment variables
 const configInt = {
   awsProfile: config.awsProfile || process.env.AWS_PROFILE,
   bucketName: process.env.AWS_DEPLOY_BUCKET_NAME || config.bucketName,
   s3Region: process.env.AWS_DEPLOY_BUCKET_REGION || config.bucketRegion,
-  webFolder: process.env.AWS_DEPLOY_WEB_FOLDER ||  config.buildFolder,
+  webFolder: process.env.AWS_DEPLOY_WEB_FOLDER ||  config.webFolder,
   cloudFrontDistributionId: process.env.AWS_DEPLOY_CLOUDFRONT_ID || config.cloudFrontID,
-  cloudFrontDefaultCacheControl: process.env.AWS_DEPLOY_DEFAULT_CACHE_CONTROL || config.cloudFrontDefaultCacheControl,
-  emptyBucket: process.env.AWS_DEPLOY_EMPTY_BUCKET || config.emptyBucket,
+  cloudFrontDefaultCacheControl: config.cloudFrontDefaultCacheControl || "no-cache",
+  cloudFrontInvalidationPaths: config.cloudFrontInvalidationPaths || [ "/*" ],
+  cloudFrontCacheRules: config.cloudFrontCacheRules,
+  emptyBucket: process.env.AWS_DEPLOY_EMPTY_BUCKET || config.emptyBucket || false,
 }
 
-console.log(configInt.cloudFrontDefaultCacheControl)
+// Handling missing variables or configuration
+if (!configInt.bucketName) {
+  console.error(consoleRed, 'Bucket name not found in config or environment variable (AWS_DEPLOY_BUCKET_NAME)');
+  process.exit(1);
+}
+
+if (!configInt.s3Region) {
+  console.error(consoleRed, 'Bucket region not found in config or environment variable (AWS_DEPLOY_BUCKET_REGION)');
+  process.exit(1);
+}
+
+if (!configInt.webFolder) {
+  console.error(consoleRed, 'Web folder not found in config or environment variable (AWS_DEPLOY_WEB_FOLDER)');
+  process.exit(1);
+}
+
+if (!config.cloudFrontCacheRules) {
+  console.error(consoleRed, 'CloudFront cache rules not found in config');
+  process.exit(1);
+}
 
 if (!configInt.cloudFrontDistributionId) {
   console.error(consoleRed,  'CloudFront distribution ID not found in config or environment variable (cloudFrontID)');
+  process.exit(1); 
+}
+
+if (!process.env.AWS_ACCESS_KEY_ID) {
+  console.error(consoleRed,  'Env variable AWS_ACCESS_KEY_ID not found.');
+  process.exit(1); 
+}
+
+if (!process.env.AWS_SECRET_ACCESS_KEY) {
+  console.error(consoleRed,  'Env variable AWS_SECRET_ACCESS_KEY not found.');
   process.exit(1); 
 }
 
@@ -51,6 +87,7 @@ const credentials = process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCE
      }
     : fromIni({ profile: configInt.awsProfile }) || null;
 
+// Create AWS clients
 const s3Client = new S3Client({ credentials, region: configInt.s3Region });
 const cfClient = new CloudFrontClient({ region: configInt.s3Region }); 
 
@@ -68,7 +105,7 @@ async function uploadDirectory(directoryPath, s3PathPrefix = '') {
       const key = s3PathPrefix + file;
       const contentType = mime.lookup(filePath) || 'application/octet-stream'; 
 
-      for (const cacheRule of config.cloudFrontCaches) {
+      for (const cacheRule of configInt.cloudFrontCacheRules) {
         let escapedPath = cacheRule.path.replace(/\./g, '\\.').replace(/\*/g, '.*'); 
         let pattern = escapedPath;
         if (escapedPath.startsWith('/')) {
@@ -87,7 +124,7 @@ async function uploadDirectory(directoryPath, s3PathPrefix = '') {
         Body: fs.createReadStream(filePath),
         ContentType: contentType,
         ACL: 'public-read',
-        CacheControl: cacheControl || 'no-cache'
+        CacheControl: cacheControl || configInt.cloudFrontDefaultCacheControl;
       };
 
       try {
@@ -100,6 +137,7 @@ async function uploadDirectory(directoryPath, s3PathPrefix = '') {
   }
 }
 
+// Function for empty bucket
 async function emptyBucket() {
   const listParams = {
     Bucket: configInt.bucketName
@@ -156,7 +194,7 @@ async function main() {
 
   if (configInt.emptyBucket) {
     await emptyBucket();
-    await delay(2000);
+    await delay(500);
   }
 
   await uploadDirectory(configInt.webFolder);
@@ -167,7 +205,7 @@ async function main() {
     InvalidationBatch: {
       Paths: {
         Quantity: 1, 
-        Items: config.cloudFrontInvalidationPaths
+        Items: configInt.cloudFrontInvalidationPaths
       },
       CallerReference: Date.now().toString()
     }
