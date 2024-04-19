@@ -6,6 +6,7 @@ const { S3Client, PutObjectCommand, ListObjectsCommand, DeleteObjectsCommand } =
 const { CloudFrontClient, CreateInvalidationCommand, GetInvalidationCommand } = require('@aws-sdk/client-cloudfront');
 const { fromIni } = require('@aws-sdk/credential-provider-ini'); 
 const { exit } = require('process');
+const utils = require('./utils')
 
 // Set console colors
 const consoleGreen = '\x1b[32m%s\x1b[0m';
@@ -37,55 +38,33 @@ const configInt = {
   s3Region: process.env.AWS_DEPLOY_BUCKET_REGION || config.bucketRegion,
   webFolder: process.env.AWS_DEPLOY_WEB_FOLDER ||  config.webFolder,
   cloudFrontDistributionId: process.env.AWS_DEPLOY_CLOUDFRONT_ID || config.cloudFrontID,
-  cloudFrontDefaultCacheControl: config.cloudFrontDefaultCacheControl || "no-cache",
+  cloudFrontDefaultCacheRule: config.cloudFrontDefaultCacheRule || "no-cache",
   cloudFrontInvalidationPaths: config.cloudFrontInvalidationPaths || [ "/*" ],
   cloudFrontCacheRules: config.cloudFrontCacheRules,
   emptyBucket: process.env.AWS_DEPLOY_EMPTY_BUCKET || config.emptyBucket || false,
 }
 
-// Handling missing variables or configuration
-if (!configInt.bucketName) {
-  console.error(consoleRed, 'Bucket name not found in config or environment variable (AWS_DEPLOY_BUCKET_NAME)');
-  process.exit(1);
-}
-
-if (!configInt.s3Region) {
-  console.error(consoleRed, 'Bucket region not found in config or environment variable (AWS_DEPLOY_BUCKET_REGION)');
-  process.exit(1);
-}
-
-if (!configInt.webFolder) {
-  console.error(consoleRed, 'Web folder not found in config or environment variable (AWS_DEPLOY_WEB_FOLDER)');
-  process.exit(1);
-}
-
-if (!config.cloudFrontCacheRules) {
-  console.error(consoleRed, 'CloudFront cache rules not found in config');
-  process.exit(1);
-}
-
-if (!configInt.cloudFrontDistributionId) {
-  console.error(consoleRed,  'CloudFront distribution ID not found in config or environment variable (cloudFrontID)');
-  process.exit(1); 
-}
-
-if (!process.env.AWS_ACCESS_KEY_ID) {
-  console.error(consoleRed,  'Env variable AWS_ACCESS_KEY_ID not found.');
-  process.exit(1); 
-}
-
-if (!process.env.AWS_SECRET_ACCESS_KEY) {
-  console.error(consoleRed,  'Env variable AWS_SECRET_ACCESS_KEY not found.');
-  process.exit(1); 
-}
+utils.ensureConfig(configInt)
 
 // Credentials handling
 const credentials = process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY
     ? {
         accessKeyId: process.env.AWS_ACCESS_KEY_ID,
         secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY
-     }
+    }
     : fromIni({ profile: configInt.awsProfile }) || null;
+
+// Handling missing credentials
+if (!credentials) {
+  console.error(consoleRed, `Credentials not found, please double check your config`);
+  process.exit(1);
+}
+
+// Handling missing web folder.
+if (!fs.existsSync(configInt.webFolder)) {
+  console.error(consoleRed, `WebFolder cannot be found. Please double check your config`);
+  process.exit(1);
+}
 
 // Create AWS clients
 const s3Client = new S3Client({ credentials, region: configInt.s3Region });
@@ -124,7 +103,7 @@ async function uploadDirectory(directoryPath, s3PathPrefix = '') {
         Body: fs.createReadStream(filePath),
         ContentType: contentType,
         ACL: 'public-read',
-        CacheControl: cacheControl || configInt.cloudFrontDefaultCacheControl;
+        CacheControl: cacheControl || configInt.cloudFrontDefaultCacherule,
       };
 
       try {
@@ -176,7 +155,7 @@ async function waitForCloudFrontInvalidation(cfClient, distributionId, invalidat
 
   let invalidationStatus;
   do {
-    await delay(5000);
+    await utils.delay(5000);
 
     const { Invalidation } = await cfClient.send(new GetInvalidationCommand(getInvalidationParams));
     invalidationStatus = Invalidation.Status;
@@ -184,17 +163,12 @@ async function waitForCloudFrontInvalidation(cfClient, distributionId, invalidat
   } while (invalidationStatus !== 'Completed');
 }
 
-// Helper for a small delay
-function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
 async function main() {
   const directoryToUpload = config.buildFolder || process.env.AWS_DEPLOY_WEB_FOLDER;
 
   if (configInt.emptyBucket) {
     await emptyBucket();
-    await delay(500);
+    await utils.delay(500);
   }
 
   await uploadDirectory(configInt.webFolder);

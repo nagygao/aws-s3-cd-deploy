@@ -1,6 +1,6 @@
 {
   "name": "aws-s3-cd-deploy",
-  "version": "0.0.1",
+  "version": "1.0.0",
   "description": "Deploy static websites to S3, set caching rules and invalidate CloudFront Distribution",
   "main": "app.js",
   "bin": {
@@ -25,7 +25,6 @@
   "dependencies": {
     "@aws-sdk/client-cloudfront": "^3.556.0",
     "@aws-sdk/client-s3": "^3.556.0",
-    "@aws-sdk/lib-storage": "^3.556.0",
     "mime-types": "^2.1.35"
   }
 }
